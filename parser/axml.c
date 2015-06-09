@@ -2038,6 +2038,7 @@ static void smoothFreqs(const int n, double *pfreqs, double *dst, pInfo *partiti
 }
 	    
 
+
 static void genericBaseFrequencies(tree *tr, const int numFreqs, rawdata *rdta, cruncheddata *cdta, size_t lower, size_t upper, int model, boolean smoothFrequencies,
 				   const unsigned int *bitMask)
 {
@@ -2081,7 +2082,7 @@ static void genericBaseFrequencies(tree *tr, const int numFreqs, rawdata *rdta, 
 	  
 	  code = yptr[j];
 
-	  printf("%c",  inverseMeaningDNA[code]);
+	  printf("%c",  inverseMeaningPROT[code]);
 	}
       printf("\n");
     }
@@ -2132,8 +2133,8 @@ static void genericBaseFrequencies(tree *tr, const int numFreqs, rawdata *rdta, 
 		  ;
 		}
 	      break;	       
-	    case 20:	     
-	      if(yptr[j] > 0 && yptr[j] < 20)
+	    case 20:	      
+	      if(yptr[j] >= 0 && yptr[j] < 20)
 		statesPresent[yptr[j]] = 1;
 	      break;	    	    
 	    default:
@@ -2143,8 +2144,10 @@ static void genericBaseFrequencies(tree *tr, const int numFreqs, rawdata *rdta, 
     }
 	      
   for(i = 0, countStatesPresent = 0; i < (size_t)numFreqs; i++)
-    if(statesPresent[i] == 1)
-      countStatesPresent++;
+    {      
+      if(statesPresent[i] == 1)
+	countStatesPresent++;
+    }  
 
   for (k = 1; k <= 8; k++) 
     {	     	   	    	      			    
