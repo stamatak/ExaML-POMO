@@ -1541,8 +1541,11 @@ static double evaluateGTRGAMMA_NSTATE (int *wptr,
     sum = 0.0, 
     term,
     *left, 
-    *right;              
-  
+    *right; 
+
+  const double
+    factor = 1.0 / (double)gammaRates;
+
   size_t
     i, 
     j, 
@@ -1586,9 +1589,7 @@ static double evaluateGTRGAMMA_NSTATE (int *wptr,
 
 	  term += tBuffer;
 	  	  	 
-	  term = LOG(0.25 * FABS(term));
-		 	  
-	  
+	  term = LOG(factor * FABS(term));		 	  	  
 
 	  sum += wptr[i] * term;
 	}    	        
@@ -1635,7 +1636,7 @@ static double evaluateGTRGAMMA_NSTATE (int *wptr,
 	      
 	      term += tBuffer;	    
 	      
-	      term = LOG(0.25 * FABS(term));	    
+	      term = LOG(factor * FABS(term));	    
 	      //printf("%d %f %d\n", i, term, wptr[i]);
 	      sum += wptr[i] * term;
 	    }
@@ -1673,7 +1674,7 @@ static double evaluateGTRGAMMA_NSTATE (int *wptr,
 	      
 	      term += tBuffer;
 	      
-	      term = LOG(0.25 * FABS(term));
+	      term = LOG(factor * FABS(term));
 	      
 	      sum += wptr[i] * term;
 	    }
