@@ -1,0 +1,339 @@
+/*  RAxML-VI-HPC (version 2.2) a program for sequential and parallel estimation of phylogenetic trees
+ *  Copyright August 2006 by Alexandros Stamatakis
+ *
+ *  Partially derived from
+ *  fastDNAml, a program for estimation of phylogenetic trees from sequences by Gary J. Olsen
+ *
+ *  and
+ *
+ *  Programs of the PHYLIP package by Joe Felsenstein.
+ *
+ *  This program is free software; you may redistribute it and/or modify its
+ *  under the terms of the GNU General Public License as published by the Free
+ *  Software Foundation; either version 2 of the License, or (at your option)
+ *  any later version.
+ *
+ *  This program is distributed in the hope that it will be useful, but
+ *  WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ *  or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ *  for more details.
+ *
+ *
+ *  For any other enquiries send an Email to Alexandros Stamatakis
+ *  Alexandros.Stamatakis@epfl.ch
+ *
+ *  When publishing work that is based on the results from RAxML-VI-HPC please cite:
+ *
+ *  Alexandros Stamatakis:"RAxML-VI-HPC: maximum likelihood-based phylogenetic analyses with
+ *  thousands of taxa and mixed models".
+ *  Bioinformatics 2006; doi: 10.1093/bioinformatics/btl446
+ */
+
+#ifndef WIN32
+#include <unistd.h>
+#endif
+
+#include <math.h>
+#include <time.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <string.h>
+#include "axml.h"
+
+//#undef __SIM_SSE3
+
+//#define __AVX
+
+#ifdef __SIM_SSE3
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+
+
+#define VECTOR_STORE_LEFT _mm_storel_pd
+
+
+
+
+#endif
+
+
+
+#ifdef __AVX
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+#include <immintrin.h>
+
+const union __attribute__ ((aligned (BYTE_ALIGNMENT)))
+{
+  int32_t i[8];
+  __m256i m;  
+} bitmask = {{0, 0, 0, 0, 0, 0, -1, -1}};
+
+
+#define VECTOR_STORE_LEFT(x,y) _mm256_maskstore_pd(x, bitmask.m, y)
+
+
+
+
+#endif
+
+
+
+static double haddScalar(VECTOR_REGISTER v)
+{
+  double 
+    result;
+
+#ifdef __SIM_SSE3
+  
+  v = _mm_hadd_pd(v, v);
+  
+  _mm_storel_pd(&result, v);
+#endif
+  
+#ifdef __AVX
+  __m256d
+    a;
+
+  double 
+    ra[4] __attribute__ ((aligned (BYTE_ALIGNMENT)));
+
+  v = _mm256_hadd_pd(v, v);
+
+  _mm256_store_pd(ra, v);
+
+  result = ra[0] + ra[2];
+#endif
+
+  return result;
+}
+
+static VECTOR_REGISTER haddBroadCast(VECTOR_REGISTER v)
+{
+#ifdef __SIM_SSE3
+  
+  return _mm_hadd_pd(v, v);  
+   
+#endif
+
+#ifdef __AVX
+  __m256d
+    a;
+  
+  v = _mm256_hadd_pd(v, v);
+  a = _mm256_permute2f128_pd(v, v, 1);
+  v = _mm256_add_pd(a, v);
+  
+  return v;
+#endif
+}
+
+
+
+
+
+/**** branch length optimization: pre-comnputation ******************/
+
+void sumGAMMA_NSTATE(int tipCase, double *sumtable, double *x1, double *x2, double *tipVector,
+		     unsigned char *tipX1, unsigned char *tipX2, int n, const int numberOfStates, const int gammaRates)
+{
+  int 
+    i, 
+    l, 
+    k;
+  
+  double 
+    *left, 
+    *right, 
+    *sum;
+
+  const int  
+    loopLength = numberOfStates - (numberOfStates % VECTOR_WIDTH), //or 18 for testing!
+    stride = numberOfStates * gammaRates;
+
+  switch(tipCase)
+    {
+    case TIP_TIP:
+      for(i = 0; i < n; i++)
+	{
+	  left  = &(tipVector[numberOfStates * tipX1[i]]);
+	  right = &(tipVector[numberOfStates * tipX2[i]]);
+
+	  for(l = 0; l < gammaRates; l++)
+	    {
+	      sum = &sumtable[i * stride + l * numberOfStates];
+
+	      for(k = 0; k < loopLength; k += VECTOR_WIDTH)
+		{
+		  VECTOR_REGISTER 
+		    sumv = VECTOR_MUL(VECTOR_LOAD(&left[k]), VECTOR_LOAD(&right[k]));
+		  
+		  VECTOR_STORE(&sum[k], sumv);		 
+		}
+
+	      for(; k < numberOfStates; k++)	
+		sum[k] = left[k] * right[k];	       
+	    }
+	}
+      break;
+    case TIP_INNER:
+      for(i = 0; i < n; i++)
+	{
+	  left = &(tipVector[numberOfStates * tipX1[i]]);
+
+	  for(l = 0; l < gammaRates; l++)
+	    {
+	      right = &(x2[stride * i + l * numberOfStates]);
+	      sum  = &sumtable[stride * i + l * numberOfStates];
+
+	      for(k = 0; k < loopLength; k += VECTOR_WIDTH)
+		{
+		  VECTOR_REGISTER 
+		    sumv = VECTOR_MUL(VECTOR_LOAD(&left[k]), VECTOR_LOAD(&right[k]));
+		  
+		  VECTOR_STORE(&sum[k], sumv);		 
+		}
+
+	      for(; k < numberOfStates; k++)
+		sum[k] = left[k] * right[k];
+
+	    }
+	}
+      break;
+    case INNER_INNER:
+      for(i = 0; i < n; i++)
+	{
+	  for(l = 0; l < gammaRates; l++)
+	    {
+	      left  = &(x1[stride * i + l * numberOfStates]);
+	      right = &(x2[stride * i + l * numberOfStates]);
+	      sum   = &(sumtable[i * stride + l * numberOfStates]);
+
+	      for(k = 0; k < loopLength; k += VECTOR_WIDTH)
+		{
+		  VECTOR_REGISTER sumv = VECTOR_MUL(VECTOR_LOAD(&left[k]), VECTOR_LOAD(&right[k]));
+		  
+		  VECTOR_STORE(&sum[k], sumv);		 
+		}
+	      
+	      for(; k < numberOfStates; k++)
+		sum[k] = left[k] * right[k];
+	    }
+	}
+      break;
+    default:
+      assert(0);
+    }
+}
+
+/**** branch length optimization: likelihood and first as well as second derivative thereof ******************/
+
+void coreGTRGAMMA_NSTATE(double *gammaRates, double *EIGN, double *sumtable, int upper, int *wgt,
+				volatile double *ext_dlnLdlz,  volatile double *ext_d2lnLdlz2, double lz, const int numberOfStates, const int numberOfGammaRates)
+{
+  const int  
+    loopLength = numberOfStates - (numberOfStates % VECTOR_WIDTH), //or 18 for testing!
+    stride = numberOfStates * numberOfGammaRates;
+
+  double  
+    *sum, 
+    diagptable0[stride] __attribute__ ((aligned (BYTE_ALIGNMENT))),
+    diagptable1[stride] __attribute__ ((aligned (BYTE_ALIGNMENT))),
+    diagptable2[stride] __attribute__ ((aligned (BYTE_ALIGNMENT)));    
+
+  int     
+    i, 
+    j, 
+    l;
+  
+  double  
+    dlnLdlz = 0.0,
+    d2lnLdlz2 = 0.0,
+    ki, 
+    kisqr,
+    inv_Li, 
+    dlnLidlz, 
+    d2lnLidlz2;
+
+  for(i = 0; i < numberOfGammaRates; i++)
+    {
+      ki = gammaRates[i];
+      kisqr = ki * ki;
+      
+      diagptable0[i * numberOfStates] = 1.0;
+      diagptable1[i * numberOfStates] = 0.0;
+      diagptable2[i * numberOfStates] = 0.0;
+
+      for(l = 1; l < numberOfStates; l++)
+	{
+	  diagptable0[i * numberOfStates + l] = EXP(EIGN[l] * ki * lz);
+	  diagptable1[i * numberOfStates + l] = EIGN[l] * ki;
+	  diagptable2[i * numberOfStates + l] = EIGN[l] * EIGN[l] * kisqr;
+	}
+    }
+
+  for (i = 0; i < upper; i++)
+    { 
+      VECTOR_REGISTER a0 = VECTOR_SET_ZERO();
+      VECTOR_REGISTER a1 = VECTOR_SET_ZERO();
+      VECTOR_REGISTER a2 = VECTOR_SET_ZERO();
+
+      double
+	a0Buffer = 0.0,
+	a1Buffer = 0.0,
+	a2Buffer = 0.0;
+
+     
+      sum = &sumtable[i * stride];         
+
+      for(j = 0; j < numberOfGammaRates; j++)
+	{	 	  	
+	  double 	   
+	    *d0 = &diagptable0[j * numberOfStates],
+	    *d1 = &diagptable1[j * numberOfStates],
+	    *d2 = &diagptable2[j * numberOfStates];
+  	 	 
+	  for(l = 0; l < loopLength; l += VECTOR_WIDTH)
+	    {
+	      VECTOR_REGISTER 
+		tmpv = VECTOR_MUL(VECTOR_LOAD(&d0[l]), VECTOR_LOAD(&sum[j * numberOfStates + l]));
+	      
+	      a0 = VECTOR_ADD(a0, tmpv);
+	      a1 = VECTOR_ADD(a1, VECTOR_MUL(tmpv, VECTOR_LOAD(&d1[l])));
+	      a2 = VECTOR_ADD(a2, VECTOR_MUL(tmpv, VECTOR_LOAD(&d2[l])));
+	    }	 	  
+	  
+	  for(; l < numberOfStates; l++)
+	    {
+	      double 
+		t = d0[l] * sum[j * numberOfStates + l];
+	      
+	      a0Buffer += t;
+	      a1Buffer += t * d1[l];
+	      a2Buffer += t * d2[l];
+	    }
+
+	}      
+
+      inv_Li = haddScalar(a0);
+      dlnLidlz = haddScalar(a1);
+      d2lnLidlz2 = haddScalar(a2);
+
+      inv_Li += a0Buffer;
+      dlnLidlz += a1Buffer;
+      d2lnLidlz2 += a2Buffer;
+
+      inv_Li = 1.0 / FABS(inv_Li);
+
+      dlnLidlz   *= inv_Li;
+      d2lnLidlz2 *= inv_Li;
+
+      dlnLdlz   += wgt[i] * dlnLidlz;
+      d2lnLdlz2 += wgt[i] * (d2lnLidlz2 - dlnLidlz * dlnLidlz);
+    }
+
+  *ext_dlnLdlz   = dlnLdlz;
+  *ext_d2lnLdlz2 = d2lnLdlz2;
+}
+

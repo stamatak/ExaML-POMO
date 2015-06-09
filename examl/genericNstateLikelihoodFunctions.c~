@@ -1,0 +1,840 @@
+/*  RAxML-VI-HPC (version 2.2) a program for sequential and parallel estimation of phylogenetic trees
+ *  Copyright August 2006 by Alexandros Stamatakis
+ *
+ *  Partially derived from
+ *  fastDNAml, a program for estimation of phylogenetic trees from sequences by Gary J. Olsen
+ *
+ *  and
+ *
+ *  Programs of the PHYLIP package by Joe Felsenstein.
+ *
+ *  This program is free software; you may redistribute it and/or modify its
+ *  under the terms of the GNU General Public License as published by the Free
+ *  Software Foundation; either version 2 of the License, or (at your option)
+ *  any later version.
+ *
+ *  This program is distributed in the hope that it will be useful, but
+ *  WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ *  or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ *  for more details.
+ *
+ *
+ *  For any other enquiries send an Email to Alexandros Stamatakis
+ *  Alexandros.Stamatakis@epfl.ch
+ *
+ *  When publishing work that is based on the results from RAxML-VI-HPC please cite:
+ *
+ *  Alexandros Stamatakis:"RAxML-VI-HPC: maximum likelihood-based phylogenetic analyses with
+ *  thousands of taxa and mixed models".
+ *  Bioinformatics 2006; doi: 10.1093/bioinformatics/btl446
+ */
+
+#ifndef WIN32
+#include <unistd.h>
+#endif
+
+#include <math.h>
+#include <time.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <string.h>
+#include "axml.h"
+
+#undef __SIM_SSE3
+
+#define __AVX
+
+#ifdef __SIM_SSE3
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+
+#define VECTOR_REGISTER __m128d
+#define VECTOR_WIDTH  2
+#define VECTOR_STORE _mm_store_pd
+#define VECTOR_MUL   _mm_mul_pd
+#define VECTOR_ADD   _mm_add_pd
+#define VECTOR_LOAD  _mm_load_pd
+#define VECTOR_SET_ZERO _mm_setzero_pd
+#define VECTOR_STORE_LEFT _mm_storel_pd
+#define VECTOR_SET_ONE _mm_set1_pd
+#define VECTOR_AND _mm_and_pd
+/* scaling ???? */
+/*
+#define VECTOR_AND _mm_and_pd
+#define VECTOR_COMPARE _
+*/
+const union __attribute__ ((aligned (BYTE_ALIGNMENT)))
+{
+       uint64_t i[2];
+       __m128d m;
+} absMaskGeneric = {{0x7fffffffffffffffULL , 0x7fffffffffffffffULL }};
+
+#endif
+
+
+
+#ifdef __AVX
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+#include <immintrin.h>
+
+//const __m256i
+//  bitmask = _mm256_set_epi32(0, 0, 0, 0, 0, 0, -1, -1);
+
+const union __attribute__ ((aligned (BYTE_ALIGNMENT)))
+{
+  int32_t i[8];
+  __m256i m;  
+} bitmask = {{0, 0, 0, 0, 0, 0, -1, -1}};
+
+#define VECTOR_REGISTER __m256d
+#define VECTOR_WIDTH  4
+#define VECTOR_STORE _mm256_store_pd
+#define VECTOR_MUL   _mm256_mul_pd
+#define VECTOR_ADD   _mm256_add_pd
+#define VECTOR_LOAD  _mm256_load_pd
+#define VECTOR_SET_ZERO _mm256_setzero_pd
+#define VECTOR_STORE_LEFT(x,y) _mm256_maskstore_pd(x, bitmask.m, y)
+#define VECTOR_SET_ONE _mm256_set1_pd
+#define VECTOR_AND _mm256_and_pd
+
+const union __attribute__ ((aligned (BYTE_ALIGNMENT)))
+{
+  uint64_t i[4];
+  __m256d m;
+  
+} absMaskGeneric = {{0x7fffffffffffffffULL, 0x7fffffffffffffffULL, 0x7fffffffffffffffULL, 0x7fffffffffffffffULL}};
+
+#endif
+
+static boolean scaleEntry(const int stride, const int i, double *x3, const int scalingLoopLength, const int vectorWidth)
+{
+  double 
+    *v = &(x3[stride * i]);
+  
+  VECTOR_REGISTER 
+    minlikelihood_vector = VECTOR_SET_ONE( minlikelihood );
+
+  int 
+    l,
+    scale = 1;
+  
+  for(l = 0; scale && (l < scalingLoopLength); l += vectorWidth)
+    {
+      VECTOR_REGISTER 
+	vv = VECTOR_LOAD(&v[l]);
+      
+      VECTOR_REGISTER 
+	v1 = VECTOR_AND(vv, absMaskGeneric.m);
+
+#ifdef __SIM_SSE3     
+      v1 = _mm_cmplt_pd(v1,  minlikelihood_vector);
+      if(_mm_movemask_pd( v1 ) != 3)
+	scale = 0;
+#endif
+      
+#ifdef __AVX
+      v1 = _mm256_cmp_pd(v1,  minlikelihood_vector, _CMP_LT_OS);
+      if(_mm256_movemask_pd( v1 ) != 15)
+	scale = 0;
+#endif
+      
+    }	    	  
+	      
+  for(;scale && (l < stride); l++)
+    scale = (ABS(v[l]) < minlikelihood);
+
+  if(scale)
+    {
+      VECTOR_REGISTER 
+	twoto = VECTOR_SET_ONE(twotothe256);	       
+
+      for(l = 0; l < scalingLoopLength; l += vectorWidth)
+	{
+	  VECTOR_REGISTER 
+	    ex3v = VECTOR_LOAD(&v[l]);		  
+	  
+	  VECTOR_STORE(&v[l], VECTOR_MUL(ex3v,twoto));	
+	}		   		  
+
+      for(;l < stride; l++)
+	v[l] *= twotothe256;
+      
+      return TRUE;
+    }
+  else
+    return FALSE;
+}
+
+
+static double haddScalar(VECTOR_REGISTER v)
+{
+double 
+result;
+
+#ifdef __SIM_SSE3
+  
+  v = _mm_hadd_pd(v, v);
+  
+  _mm_storel_pd(&result, v);
+#endif
+  
+#ifdef __AVX
+__m256d
+a;
+
+
+
+v = _mm256_hadd_pd(v, v);
+
+
+
+#endif
+
+  return result;
+}
+
+VECTOR_REGISTER haddBroadCast(VECTOR_REGISTER v)
+{
+#ifdef __SIM_SSE3
+  
+  return _mm_hadd_pd(v, v);  
+   
+#endif
+
+#ifdef __AVX
+__m256d
+a;
+
+v = _mm256_hadd_pd(v, v);
+a = _mm256_permute2f128_pd(v, v, 1);
+v = _mm256_add_pd(a, v);
+
+return v;
+#endif
+}
+
+
+
+
+
+/**** branch length optimization: pre-comnputation ******************/
+
+inline void sumGAMMA_NSTATE(int tipCase, double *sumtable, double *x1, double *x2, double *tipVector,
+		     unsigned char *tipX1, unsigned char *tipX2, int n, const int numberOfStates, const int gammaRates)
+{
+  int 
+    i, 
+    l, 
+    k;
+  
+  double 
+    *left, 
+    *right, 
+    *sum;
+
+  const int 
+    vectorWidth = 2,
+    loopLength = numberOfStates - (numberOfStates % vectorWidth), //or 18 for testing!
+    stride = numberOfStates * gammaRates;
+
+  switch(tipCase)
+    {
+    case TIP_TIP:
+      for(i = 0; i < n; i++)
+	{
+	  left  = &(tipVector[numberOfStates * tipX1[i]]);
+	  right = &(tipVector[numberOfStates * tipX2[i]]);
+
+	  for(l = 0; l < gammaRates; l++)
+	    {
+	      sum = &sumtable[i * stride + l * numberOfStates];
+
+	      for(k = 0; k < loopLength; k += vectorWidth)
+		{
+		  VECTOR_REGISTER 
+		    sumv = VECTOR_MUL(VECTOR_LOAD(&left[k]), VECTOR_LOAD(&right[k]));
+		  
+		  VECTOR_STORE(&sum[k], sumv);		 
+		}
+
+	      for(; k < numberOfStates; k++)	
+		sum[k] = left[k] * right[k];	       
+	    }
+	}
+      break;
+    case TIP_INNER:
+      for(i = 0; i < n; i++)
+	{
+	  left = &(tipVector[numberOfStates * tipX1[i]]);
+
+	  for(l = 0; l < gammaRates; l++)
+	    {
+	      right = &(x2[stride * i + l * numberOfStates]);
+	      sum  = &sumtable[stride * i + l * numberOfStates];
+
+	      for(k = 0; k < loopLength; k += vectorWidth)
+		{
+		  VECTOR_REGISTER 
+		    sumv = VECTOR_MUL(VECTOR_LOAD(&left[k]), VECTOR_LOAD(&right[k]));
+		  
+		  VECTOR_STORE(&sum[k], sumv);		 
+		}
+
+	      for(; k < numberOfStates; k++)
+		sum[k] = left[k] * right[k];
+
+	    }
+	}
+      break;
+    case INNER_INNER:
+      for(i = 0; i < n; i++)
+	{
+	  for(l = 0; l < gammaRates; l++)
+	    {
+	      left  = &(x1[stride * i + l * numberOfStates]);
+	      right = &(x2[stride * i + l * numberOfStates]);
+	      sum   = &(sumtable[i * stride + l * numberOfStates]);
+
+	      for(k = 0; k < loopLength; k += vectorWidth)
+		{
+		  VECTOR_REGISTER sumv = VECTOR_MUL(VECTOR_LOAD(&left[k]), VECTOR_LOAD(&right[k]));
+		  
+		  VECTOR_STORE(&sum[k], sumv);		 
+		}
+	      
+	      for(; k < numberOfStates; k++)
+		sum[k] = left[k] * right[k];
+	    }
+	}
+      break;
+    default:
+      assert(0);
+    }
+}
+
+/**** branch length optimization: likelihood and first as well as second derivative thereof ******************/
+
+inline void coreGTRGAMMA_NSTATE(double *gammaRates, double *EIGN, double *sumtable, int upper, int *wgt,
+				volatile double *ext_dlnLdlz,  volatile double *ext_d2lnLdlz2, double lz, const int numberOfStates, const int numberOfGammaRates)
+{
+  const int
+    vectorWidth = 2,
+    loopLength = numberOfStates - (numberOfStates % vectorWidth), //or 18 for testing!
+    stride = numberOfStates * numberOfGammaRates;
+
+  double  
+    *sum, 
+    diagptable0[stride] __attribute__ ((aligned (BYTE_ALIGNMENT))),
+    diagptable1[stride] __attribute__ ((aligned (BYTE_ALIGNMENT))),
+    diagptable2[stride] __attribute__ ((aligned (BYTE_ALIGNMENT)));    
+
+  int     
+    i, 
+    j, 
+    l;
+  
+  double  
+    dlnLdlz = 0.0,
+    d2lnLdlz2 = 0.0,
+    ki, 
+    kisqr,
+    inv_Li, 
+    dlnLidlz, 
+    d2lnLidlz2;
+
+  for(i = 0; i < numberOfGammaRates; i++)
+    {
+      ki = gammaRates[i];
+      kisqr = ki * ki;
+      
+      diagptable0[i * numberOfStates] = 1.0;
+      diagptable1[i * numberOfStates] = 0.0;
+      diagptable2[i * numberOfStates] = 0.0;
+
+      for(l = 1; l < numberOfStates; l++)
+	{
+	  diagptable0[i * numberOfStates + l] = EXP(EIGN[l] * ki * lz);
+	  diagptable1[i * numberOfStates + l] = EIGN[l] * ki;
+	  diagptable2[i * numberOfStates + l] = EIGN[l] * EIGN[l] * kisqr;
+	}
+    }
+
+  for (i = 0; i < upper; i++)
+    { 
+      VECTOR_REGISTER a0 = VECTOR_SET_ZERO();
+      VECTOR_REGISTER a1 = VECTOR_SET_ZERO();
+      VECTOR_REGISTER a2 = VECTOR_SET_ZERO();
+
+      double
+	a0Buffer = 0.0,
+	a1Buffer = 0.0,
+	a2Buffer = 0.0;
+
+     
+      sum = &sumtable[i * stride];         
+
+      for(j = 0; j < numberOfGammaRates; j++)
+	{	 	  	
+	  double 	   
+	    *d0 = &diagptable0[j * numberOfStates],
+	    *d1 = &diagptable1[j * numberOfStates],
+	    *d2 = &diagptable2[j * numberOfStates];
+  	 	 
+	  for(l = 0; l < loopLength; l += vectorWidth)
+	    {
+	      VECTOR_REGISTER 
+		tmpv = VECTOR_MUL(VECTOR_LOAD(&d0[l]), VECTOR_LOAD(&sum[j * numberOfStates + l]));
+	      
+	      a0 = VECTOR_ADD(a0, tmpv);
+	      a1 = VECTOR_ADD(a1, VECTOR_MUL(tmpv, VECTOR_LOAD(&d1[l])));
+	      a2 = VECTOR_ADD(a2, VECTOR_MUL(tmpv, VECTOR_LOAD(&d2[l])));
+	    }	 	  
+	  
+	  for(; l < numberOfStates; l++)
+	    {
+	      double 
+		t = d0[l] * sum[j * numberOfStates + l];
+	      
+	      a0Buffer += t;
+	      a1Buffer += t * d1[l];
+	      a2Buffer += t * d2[l];
+	    }
+
+	}      
+
+      inv_Li = haddScalar(a0);
+      dlnLidlz = haddScalar(a1);
+      d2lnLidlz2 = haddScalar(a2);
+
+      inv_Li += a0Buffer;
+      dlnLidlz += a1Buffer;
+      d2lnLidlz2 += a2Buffer;
+
+      inv_Li = 1.0 / FABS(inv_Li);
+
+      dlnLidlz   *= inv_Li;
+      d2lnLidlz2 *= inv_Li;
+
+      dlnLdlz   += wgt[i] * dlnLidlz;
+      d2lnLdlz2 += wgt[i] * (d2lnLidlz2 - dlnLidlz * dlnLidlz);
+    }
+
+  *ext_dlnLdlz   = dlnLdlz;
+  *ext_d2lnLdlz2 = d2lnLdlz2;
+}
+
+/**** likelihood calculation at virtual root **************************/
+
+
+inline double evaluateGTRGAMMA_NSTATE (int *wptr,
+				double *x1, double *x2,  
+				double *tipVector, 
+				unsigned char *tipX1, int n, double *diagptable, 
+				const int numberOfStates, 
+				const int gammaRates)
+{
+  double   
+    sum = 0.0, 
+    term,
+    *left, 
+    *right;              
+  
+  int     
+    i, 
+    j, 
+    l;   
+
+  const int 
+    vectorWidth = 2,
+    loopLength = numberOfStates - (numberOfStates % vectorWidth), //or 18 for testing!
+    stride = numberOfStates * gammaRates;
+ 
+  if(tipX1)
+    {               
+      for (i = 0; i < n; i++) 
+	{
+	  VECTOR_REGISTER 
+	    tv = VECTOR_SET_ZERO();
+
+	  double 
+	    tBuffer = 0.0;
+
+	  left = &(tipVector[numberOfStates * tipX1[i]]);	  	  
+	  
+	  for(j = 0, term = 0.0; j < gammaRates; j++)
+	    {
+	      double 
+		*d = &diagptable[j * numberOfStates];
+	      
+	      right = &(x2[stride * i + numberOfStates * j]);
+	      
+	      for(l = 0; l < loopLength; l += vectorWidth)
+		{
+		  VECTOR_REGISTER 
+		    mul = VECTOR_MUL(VECTOR_LOAD(&left[l]), VECTOR_LOAD(&right[l]));
+		  tv = VECTOR_ADD(tv, VECTOR_MUL(mul, VECTOR_LOAD(&d[l])));		   
+		}	
+	     
+	      for(; l < numberOfStates; l++)
+		tBuffer += left[l] * right[l] * d[l];	   	 		
+	    }	 	 
+
+	  term = haddScalar(tv);
+
+	  term += tBuffer;
+	  	  	 
+	  term = LOG(0.25 * FABS(term));
+		 	  
+	  sum += wptr[i] * term;
+	}    	        
+    }              
+  else
+    {
+      for (i = 0; i < n; i++) 
+	{	  	 	             
+	  VECTOR_REGISTER 
+	    tv = VECTOR_SET_ZERO();	 	  	  
+
+	  double 
+	    tBuffer = 0.0;
+	      
+	  for(j = 0, term = 0.0; j < gammaRates; j++)
+	    {
+	      double 
+		*d = &diagptable[j * numberOfStates];
+	      
+	      left  = &(x1[stride * i + numberOfStates * j]);
+	      right = &(x2[stride * i + numberOfStates * j]);
+	      
+	      for(l = 0; l < loopLength; l += vectorWidth)
+		{
+		  VECTOR_REGISTER 
+		    mul = VECTOR_MUL(VECTOR_LOAD(&left[l]), VECTOR_LOAD(&right[l]));
+		  tv = VECTOR_ADD(tv, VECTOR_MUL(mul, VECTOR_LOAD(&d[l])));		   
+		}
+
+	      for(; l < numberOfStates; l++)
+		tBuffer += left[l] * right[l] * d[l];		 		
+	    }	  	  	  
+
+	  term = haddScalar(tv);
+
+	  term += tBuffer;
+	  	
+	  term = LOG(0.25 * FABS(term));
+	  	  
+	  sum += wptr[i] * term;
+	}
+    }
+       
+  return  sum;
+}
+
+
+/**** CLV computation at inner node of the tree *********************/
+
+
+
+inline void newviewGTRGAMMA_NSTATES(int tipCase,
+			     double *x1, double *x2, double *x3, double *extEV, double *tipVector,
+			     unsigned char *tipX1, unsigned char *tipX2,
+			     int n, double *left, double *right, int *wgt, int *scalerIncrement, const int numberOfAllCharacters, const int numberOfStates, 
+			     const int gammaRates)
+{
+  double  
+    *uX1, 
+    *uX2, 
+    *v, 
+    x1px2,
+    *vl, 
+    *vr;
+  
+  int  
+    i, 
+    j, 
+    l, 
+    k, 
+    scale, 
+    addScale = 0;
+
+  const int   
+    vectorWidth = 2,
+    loopLength = numberOfStates - (numberOfStates % vectorWidth), //or 18 for testing!
+    scalingLoopLength = loopLength * gammaRates,
+    statesSquare = numberOfStates * numberOfStates,
+    stride = numberOfStates * gammaRates,
+    umpLength = numberOfAllCharacters * numberOfStates * gammaRates;
+ 
+  switch(tipCase)
+    {
+    case TIP_TIP:
+      {
+	double 
+	  umpX1[umpLength], 
+	  umpX2[umpLength];
+
+	for(i = 0; i < numberOfAllCharacters; i++)
+	  {
+	    v = &(tipVector[numberOfStates * i]);
+
+	    for(k = 0; k < stride; k++)
+	      {
+		double *ll =  &left[k * numberOfStates];
+		double *rr =  &right[k * numberOfStates];
+		
+		VECTOR_REGISTER umpX1v = VECTOR_SET_ZERO();
+		VECTOR_REGISTER umpX2v = VECTOR_SET_ZERO();	       
+		
+		for(l = 0; l < loopLength; l += vectorWidth)
+		  {
+		    VECTOR_REGISTER vv = VECTOR_LOAD(&v[l]);
+		    umpX1v = VECTOR_ADD(umpX1v, VECTOR_MUL(vv, VECTOR_LOAD(&ll[l])));
+		    umpX2v = VECTOR_ADD(umpX2v, VECTOR_MUL(vv, VECTOR_LOAD(&rr[l])));					
+		  }					
+
+		umpX1[stride * i + k] = haddScalar(umpX1v);
+		umpX2[stride * i + k] = haddScalar(umpX2v);
+
+		for(;l < numberOfStates; l++)
+		  {
+		    umpX1[stride * i + k] += v[l] * ll[l]; 
+		    umpX2[stride * i + k] += v[l] * rr[l];
+		  }
+		
+	      }
+	  }
+
+	for(i = 0; i < n; i++)
+	  {
+	    uX1 = &umpX1[stride * tipX1[i]];
+	    uX2 = &umpX2[stride * tipX2[i]];
+
+	    for(j = 0; j < gammaRates; j++)
+	      {
+		v = &x3[i * stride + j * numberOfStates];
+
+		VECTOR_REGISTER zero =  VECTOR_SET_ZERO();
+				
+		for(k = 0; k < loopLength; k += vectorWidth)		  		    
+		  VECTOR_STORE(&v[k], zero);
+
+		for(;k < numberOfStates; k++)
+		  v[k] = 0.0;
+
+		for(k = 0; k < numberOfStates; k++)
+		  { 
+		    double 
+		      *eev = &extEV[k * numberOfStates];
+		    
+		    x1px2 = uX1[j * numberOfStates + k] * uX2[j * numberOfStates + k];
+		    
+		    VECTOR_REGISTER 
+		      x1px2v = VECTOR_SET_ONE(x1px2);
+
+		    for(l = 0; l < loopLength; l += vectorWidth)
+		      {
+		      	VECTOR_REGISTER vv = VECTOR_LOAD(&v[l]);
+			VECTOR_REGISTER ee = VECTOR_LOAD(&eev[l]);
+
+			vv = VECTOR_ADD(vv, VECTOR_MUL(x1px2v,ee));
+			
+			VECTOR_STORE(&v[l], vv);
+		      }
+
+		    for(;l < numberOfStates; l++)
+		      v[l] += x1px2 * eev[l];
+		  }
+	      }	   
+	  }
+      }
+      break;
+    case TIP_INNER:
+      {
+	double 
+	  umpX1[umpLength], 
+	  ump_x2[numberOfStates];
+
+
+	for(i = 0; i < numberOfAllCharacters; i++)
+	  {
+	    v = &(tipVector[numberOfStates * i]);
+
+	    for(k = 0; k < stride; k++)
+	      {
+		double *ll =  &left[k * numberOfStates];
+				
+		VECTOR_REGISTER umpX1v = VECTOR_SET_ZERO();
+		
+		for(l = 0; l < loopLength; l += vectorWidth)
+		  {
+		    VECTOR_REGISTER vv = VECTOR_LOAD(&v[l]);
+		    umpX1v = VECTOR_ADD(umpX1v, VECTOR_MUL(vv, VECTOR_LOAD(&ll[l])));		    					
+		  }					
+
+		umpX1[stride * i + k] = haddScalar(umpX1v);
+		
+		for(;l < numberOfStates; l++)		  
+		  umpX1[stride * i + k] += v[l] * ll[l]; 	       
+	      }
+	  }
+
+	for (i = 0; i < n; i++)
+	  {
+	    uX1 = &umpX1[stride * tipX1[i]];
+
+	    for(k = 0; k < gammaRates; k++)
+	      {
+		v = &(x2[stride * i + k * numberOfStates]);
+	       
+		for(l = 0; l < numberOfStates; l++)
+		  {		   
+		    double *r =  &right[k * statesSquare + l * numberOfStates];
+		    VECTOR_REGISTER ump_x2v = VECTOR_SET_ZERO();	    
+		    
+		    for(j = 0; j < numberOfStates; j+= vectorWidth)
+		      {
+			VECTOR_REGISTER vv = VECTOR_LOAD(&v[j]);
+			VECTOR_REGISTER rr = VECTOR_LOAD(&r[j]);
+			ump_x2v = VECTOR_ADD(ump_x2v, VECTOR_MUL(vv, rr));
+		      }
+		     
+		    ump_x2[l] = haddScalar(ump_x2v);
+
+		    for(;j < numberOfStates; j++)
+		      ump_x2[l] += v[j] * r[j];
+		  }
+
+		v = &(x3[stride * i + numberOfStates * k]);
+
+		VECTOR_REGISTER zero =  VECTOR_SET_ZERO();
+		
+		for(l = 0; l < loopLength; l += vectorWidth)		  		    
+		  VECTOR_STORE(&v[l], zero);
+
+		for(;l < numberOfStates; l++)
+		  v[l] = 0.0;
+		  
+		for(l = 0; l < numberOfStates; l++)
+		  {
+		    double *eev = &extEV[l * numberOfStates];
+		    x1px2 = uX1[k * numberOfStates + l]  * ump_x2[l];
+		    VECTOR_REGISTER x1px2v = VECTOR_SET_ONE(x1px2);
+		  
+		    for(j = 0; j < loopLength; j += vectorWidth)
+		      {
+			VECTOR_REGISTER vv = VECTOR_LOAD(&v[j]);
+			VECTOR_REGISTER ee = VECTOR_LOAD(&eev[j]);
+			
+			vv = VECTOR_ADD(vv, VECTOR_MUL(x1px2v,ee));
+			
+			VECTOR_STORE(&v[j], vv);
+		      }		     		    
+
+		    for(;j < numberOfStates; j++)
+		      v[j] += x1px2 * eev[j];
+		  }			
+	      }
+	   	   
+	    if(scaleEntry(stride, i, x3, scalingLoopLength, vectorWidth))
+	      addScale += wgt[i];		       	      	
+	  }
+      }
+      break;
+    case INNER_INNER:
+      for (i = 0; i < n; i++)
+       {
+	 for(k = 0; k < gammaRates; k++)
+	   {
+	     vl = &(x1[stride * i + numberOfStates * k]);
+	     vr = &(x2[stride * i + numberOfStates * k]);
+	     v =  &(x3[stride * i + numberOfStates * k]);
+
+	     VECTOR_REGISTER zero =  VECTOR_SET_ZERO();
+	     
+	     for(l = 0; l < loopLength; l += vectorWidth)		  		    
+	       VECTOR_STORE(&v[l], zero);
+
+	     for(;l < numberOfStates; l++)
+	       v[l] = 0.0;
+
+	     for(l = 0; l < numberOfStates; l++)
+	       {		 		 
+		 VECTOR_REGISTER al = VECTOR_SET_ZERO();
+		 VECTOR_REGISTER ar = VECTOR_SET_ZERO();		  
+		 
+		 double *ll   = &left[k * statesSquare + l * numberOfStates];
+		 double *rr   = &right[k * statesSquare + l * numberOfStates];
+		 double *EVEV = &extEV[numberOfStates * l];
+		 
+		 double 
+		   sal = 0.0,
+		   sar = 0.0;
+		 
+		 for(j = 0; j < loopLength; j += vectorWidth)
+		   {
+		     VECTOR_REGISTER lv  = VECTOR_LOAD(&ll[j]);
+		     VECTOR_REGISTER rv  = VECTOR_LOAD(&rr[j]);
+		     VECTOR_REGISTER vll = VECTOR_LOAD(&vl[j]);
+		     VECTOR_REGISTER vrr = VECTOR_LOAD(&vr[j]);
+		     
+		     al = VECTOR_ADD(al, VECTOR_MUL(vll, lv));
+		     ar = VECTOR_ADD(ar, VECTOR_MUL(vrr, rv));
+		   }  		 
+		       
+		 //Hadd with broadcast!
+
+		 //al = _mm_hadd_pd(al, al);
+		 //ar = _mm_hadd_pd(ar, ar);
+
+		 al = haddBroadCast(al);
+		 ar = haddBroadCast(ar);
+		 
+		 
+		 if(j < numberOfStates)
+		   {
+		     for(;j < numberOfStates; j++)
+		       {
+			 sal += (ll[j] * vl[j]);
+			 sar += (rr[j] * vr[j]);
+		       }
+		     
+		     al = VECTOR_ADD(al, VECTOR_SET_ONE(sal));
+		     ar = VECTOR_ADD(ar, VECTOR_SET_ONE(sar));
+		   }
+		 
+		 al = VECTOR_MUL(al, ar);
+		 
+		 for(j = 0; j < loopLength; j += vectorWidth)
+		   {
+		     VECTOR_REGISTER vv  = VECTOR_LOAD(&v[j]);
+		     VECTOR_REGISTER EVV = VECTOR_LOAD(&EVEV[j]);
+		     
+		     vv = VECTOR_ADD(vv, VECTOR_MUL(al, EVV));
+		     
+		     VECTOR_STORE(&v[j], vv);
+		   }	
+		 
+		 if(j < numberOfStates)
+		   {		       
+		     VECTOR_STORE_LEFT(&sal, al);
+		     for(;j < numberOfStates; j++)
+		       v[j] += (sal * EVEV[j]);
+		   }		   
+	       }
+		 
+	   }	   
+
+	 if(scaleEntry(stride, i, x3, scalingLoopLength, vectorWidth))
+	   addScale += wgt[i];	
+       }
+      break;
+    default:
+      assert(0);
+    }
+
+  
+  *scalerIncrement = addScale;
+
+}

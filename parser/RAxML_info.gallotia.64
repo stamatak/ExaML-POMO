@@ -1,0 +1,63 @@
+Pattern compression: ON
+
+Alignment has 34 completely undetermined sites that will be automatically removed from the binary alignment file
+
+
+Number of POMO species: 7
+
+POMO Species name: Gallotia_atlanica
+POMO Species name: Gallotia_caesaris
+POMO Species name: Gallotia_galloti
+POMO Species name: Gallotia_gomerana
+POMO Species name: Gallotia_intermedia
+POMO Species name: Gallotia_simonyi
+POMO Species name: Gallotia_stehlini
+
+
+
+Building CLV for POMO species 0 comprising the following individuals:
+Gallotia_atlantica_1 Gallotia_atlantica_3 Gallotia_atlantica_7 Gallotia_atlantica_9 
+
+Building CLV for POMO species 1 comprising the following individuals:
+Gallotia_caesaris_1 Gallotia_caesaris_2 Gallotia_caesaris_8 Gallotia_caesaris_9 
+
+Building CLV for POMO species 2 comprising the following individuals:
+Gallotia_galloti_10 Gallotia_galloti_12 Gallotia_galloti_14 Gallotia_galloti_4 
+
+Building CLV for POMO species 3 comprising the following individuals:
+Gallotia_gomerana_1 Gallotia_gomerana_2 
+
+Building CLV for POMO species 4 comprising the following individuals:
+Gallotia_intermedia_1 Gallotia_intermedia_2 
+
+Building CLV for POMO species 5 comprising the following individuals:
+Gallotia_simonyi_1 Gallotia_simonyi_2 
+
+Building CLV for POMO species 6 comprising the following individuals:
+Gallotia_stehlini_1 Gallotia_stehlini_4 
+
+
+Your alignment has 258 unique patterns
+
+
+Under CAT the memory required by ExaML for storing CLVs and tip vectors will be
+7925760 bytes
+7740 kiloBytes
+7 MegaBytes
+0 GigaBytes
+
+
+Under GAMMA the memory required by ExaML for storing CLVs and tip vectors will be
+15851520 bytes
+15480 kiloBytes
+15 MegaBytes
+0 GigaBytes
+
+Please note that, these are just the memory requirements for doing likelihood calculations!
+To be on the safe side, we recommend that you execute ExaML on a system with twice that memory.
+
+
+Binary and compressed alignment file written to file gallotia.64.binary
+
+Parsing completed, exiting now ... 
+
