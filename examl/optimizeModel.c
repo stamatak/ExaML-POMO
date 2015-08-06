@@ -487,15 +487,14 @@ static void changeModelParameters(int index, int rateNumber, double value, int w
     }
 }
 
-static void evaluateChange(tree *tr, int rateNumber, double *value, double *result, boolean* converged, int whichFunction, int numberOfModels, linkageList *ll, double modelEpsilon)
+static void evaluateChange(tree *tr, int rateNumber, double *value, double *result, boolean* converged, int whichFunction, int numberOfModels, linkageList *ll)
 { 
   int 
     i, 
     k, 
     pos;
 
-  boolean
-    atLeastOnePartition = FALSE;
+  
    
   for(i = 0, pos = 0; i < ll->entries; i++)
     {
@@ -511,7 +510,7 @@ static void evaluateChange(tree *tr, int rateNumber, double *value, double *resu
 	    }
 	  else
 	    {
-	      atLeastOnePartition = TRUE;
+	      
 
 	      for(k = 0; k < ll->ld[i].partitions; k++)
 		{
@@ -571,34 +570,7 @@ static void evaluateChange(tree *tr, int rateNumber, double *value, double *resu
       assert(0);
     }
 
-   //nested optimization for LX4 model, now optimize the weights!
-
-  if(whichFunction == LXRATE_F && atLeastOnePartition)
-    {
-      boolean 
-	*buffer = (boolean*)malloc((size_t)tr->NumberOfModels * sizeof(boolean));
-	    
-      memcpy(buffer, tr->executeModel, sizeof(boolean) * (size_t)tr->NumberOfModels);
-	    
-      for(i = 0; i < tr->NumberOfModels; i++)
-	tr->executeModel[i] = FALSE;
-	    
-      for(i = 0, pos = 0; i < ll->entries; i++)	
-	{  
-	  int 
-	    index = ll->ld[i].partitionList[0];	    	      
-	    
-	  if(ll->ld[i].valid)		  	    	      		   	    
-	    tr->executeModel[index] = TRUE;	    
-	}
-
-      optimizeWeights(tr, modelEpsilon, ll, numberOfModels);      
-	    
-      memcpy(tr->executeModel, buffer, sizeof(boolean) * (size_t)tr->NumberOfModels);
-	    
-      free(buffer);
-    }
-    
+   
 
   //LIBRARY: need to switch over parallel regions here either call 
   //the one for the rates or for alpha!
@@ -782,7 +754,7 @@ static void brentGeneric(double *ax, double *bx, double *cx, double *fb, double 
 	    }
 	}
                  
-      evaluateChange(tr, rateNumber, u, fu, converged, whichFunction, numberOfModels, ll, tol);
+      evaluateChange(tr, rateNumber, u, fu, converged, whichFunction, numberOfModels, ll);
 
       for(i = 0; i < numberOfModels; i++)
 	{
@@ -861,7 +833,7 @@ static void brentGeneric(double *ax, double *bx, double *cx, double *fb, double 
 
 static int brakGeneric(double *param, double *ax, double *bx, double *cx, double *fa, double *fb, 
 		       double *fc, double *lim_inf, double *lim_sup, 
-		       int numberOfModels, int rateNumber, int whichFunction, tree *tr, linkageList *ll, double modelEpsilon)
+		       int numberOfModels, int rateNumber, int whichFunction, tree *tr, linkageList *ll)
 {
   double 
     *ulim = (double *)malloc(sizeof(double) * (size_t)numberOfModels),
@@ -902,7 +874,7 @@ static int brakGeneric(double *param, double *ax, double *bx, double *cx, double
     }
    
   
-  evaluateChange(tr, rateNumber, param, fa, converged, whichFunction, numberOfModels, ll, modelEpsilon);
+  evaluateChange(tr, rateNumber, param, fa, converged, whichFunction, numberOfModels, ll);
 
 
   for(i = 0; i < numberOfModels; i++)
@@ -916,7 +888,7 @@ static int brakGeneric(double *param, double *ax, double *bx, double *cx, double
       assert(param[i] >= lim_inf[i] && param[i] <= lim_sup[i]);
     }
   
-  evaluateChange(tr, rateNumber, param, fb, converged, whichFunction, numberOfModels, ll, modelEpsilon);
+  evaluateChange(tr, rateNumber, param, fb, converged, whichFunction, numberOfModels, ll);
 
   for(i = 0; i < numberOfModels; i++)  
     {
@@ -939,7 +911,7 @@ static int brakGeneric(double *param, double *ax, double *bx, double *cx, double
     }
   
  
-  evaluateChange(tr, rateNumber, param, fc, converged, whichFunction, numberOfModels,  ll, modelEpsilon);
+  evaluateChange(tr, rateNumber, param, fc, converged, whichFunction, numberOfModels,  ll);
 
   while(1) 
     {       
@@ -1083,7 +1055,7 @@ static int brakGeneric(double *param, double *ax, double *bx, double *cx, double
 	    }
 	}
              
-      evaluateChange(tr, rateNumber, param, temp, converged, whichFunction, numberOfModels, ll, modelEpsilon);
+      evaluateChange(tr, rateNumber, param, temp, converged, whichFunction, numberOfModels, ll);
 
       for(i = 0; i < numberOfModels; i++)
 	{
@@ -1181,7 +1153,10 @@ static void optLG4X(tree *tr, double modelEpsilon, linkageList *ll, int numberOf
     i;
   
   for(i = 0; i < 4; i++)
-    optParamGeneric(tr, modelEpsilon, ll, numberOfModels, i, LG4X_RATE_MIN, LG4X_RATE_MAX, LXRATE_F);      
+    { 
+      optParamGeneric(tr, modelEpsilon, ll, numberOfModels, i, LG4X_RATE_MIN, LG4X_RATE_MAX, LXRATE_F);      
+      optimizeWeights(tr, modelEpsilon, ll, numberOfModels); 
+    }
 }
 
 
@@ -1438,13 +1413,7 @@ static void optParamGeneric(tree *tr, double modelEpsilon, linkageList *ll, int 
  
   evaluateGeneric(tr, tr->start, TRUE);
 
-  if(whichParameterType == LXRATE_F)
-    {
-      int kk;
-      
-      for(kk = 0; kk < tr->NumberOfModels; kk++)
-	tr->partitionData[kk].weightLikelihood = tr->perPartitionLH[kk];
-    }  
+  
   
 #ifdef  _DEBUG_MOD_OPT
   double
@@ -1546,7 +1515,7 @@ static void optParamGeneric(tree *tr, double modelEpsilon, linkageList *ll, int 
 
   assert(pos == numberOfModels);
 
-  brakGeneric(_param, _a, _b, _c, _fa, _fb, _fc, lim_inf, lim_sup, numberOfModels, rateNumber, whichParameterType, tr, ll, modelEpsilon);
+  brakGeneric(_param, _a, _b, _c, _fa, _fb, _fc, lim_inf, lim_sup, numberOfModels, rateNumber, whichParameterType, tr, ll);
       
   for(k = 0; k < numberOfModels; k++)
     {
@@ -1571,12 +1540,7 @@ static void optParamGeneric(tree *tr, double modelEpsilon, linkageList *ll, int 
 		  int 
 		    index = ll->ld[k].partitionList[j];
 		  
-		  if(whichParameterType == LXRATE_F)
-		    {
-		      memcpy(tr->partitionData[index].weights,         &startWeights[pos * 4], sizeof(double) * 4);
-		      memcpy(tr->partitionData[index].gammaRates,      &startRates[pos * 4], sizeof(double) * 4);
-		      memcpy(tr->partitionData[index].weightExponents, &startExponents[pos * 4], 4 * sizeof(double));
-		    }
+		  
 		  
 		  changeModelParameters(index, rateNumber, startValues[pos], whichParameterType, tr);		 
 		}
@@ -1592,27 +1556,7 @@ static void optParamGeneric(tree *tr, double modelEpsilon, linkageList *ll, int 
 		  int 
 		    index = ll->ld[k].partitionList[j];
 
-		  changeModelParameters(index, rateNumber, _x[pos], whichParameterType, tr);
-
-		  if(whichParameterType == LXWEIGHT_F)
-		    {
-		      if(endLH[pos] > tr->partitionData[index].weightLikelihood)
-			{
-			  memcpy(tr->partitionData[index].weightsBuffer,         tr->partitionData[index].weights, sizeof(double) * 4);
-			  memcpy(tr->partitionData[index].weightExponentsBuffer, tr->partitionData[index].weightExponents, sizeof(double) * 4);
-			  tr->partitionData[index].weightLikelihood = endLH[pos];
-			}
-		    }
-
-		  if(whichParameterType == LXRATE_F)
-		    {
-		      memcpy(tr->partitionData[index].weights,         tr->partitionData[index].weightsBuffer, sizeof(double) * 4);		 
-		      memcpy(tr->partitionData[index].weightExponents, tr->partitionData[index].weightExponentsBuffer, sizeof(double) * 4);
-		    }
-		  
-		  if(whichParameterType == LXRATE_F || whichParameterType == LXWEIGHT_F)
-		    scaleLG4X_EIGN(tr, index);
-		  
+		  changeModelParameters(index, rateNumber, _x[pos], whichParameterType, tr);		  		  
 		}
 	    }
 	  pos++;

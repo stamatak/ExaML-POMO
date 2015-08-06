@@ -1793,6 +1793,12 @@ static void get_args(int argc, char *argv[], analdef *adef, tree *tr)
 	strcpy(pomoMapFileName, optarg);
 	pomoMapSet = TRUE;
 	break;
+	/*case 'r':
+	adef->randomSeed;
+	break;
+      case 'b':
+	adef->bootstrapReplicates;
+	break;*/
       default:
 	errorExit(-1);
     }

@@ -4384,7 +4384,10 @@ static void updatePomoRates(tree *tr, size_t model)
 
   double 
     m[states][states],
-    nSquare = (double)(tr->partitionData[model].pomoN * tr->partitionData[model].pomoN);
+    nSquare = (double)(tr->partitionData[model].pomoN * tr->partitionData[model].pomoN),
+    pomoN = tr->partitionData[model].pomoN,
+    pomoK = tr->partitionData[model].pomoK,
+    pomoPhi = tr->partitionData[model].pomoPhi;
 
   
   //set matrix to 0
@@ -4393,7 +4396,7 @@ static void updatePomoRates(tree *tr, size_t model)
       m[i][j] = 0.0;
 
   //initialize GTR part of it 
-  //assumes that pomoRates have been set elsewhere !
+  //assumes that GTR pomoRates have been set elsewhere !
   for(i = 0, l = 0; i < 4; i++)
     for(j = i + 1; j < 4; j++)
       m[i][j] = tr->partitionData[model].pomoRates[l++];
@@ -4411,20 +4414,30 @@ static void updatePomoRates(tree *tr, size_t model)
   assert(l == 6);
 
   //mth set up within-poly transitions
-  for(i = 4; i < states - 1; i++)
-    m[i][i + 1] = 1.0;
-      
-
-  /*
-    printf("\n\n");
-    
-    for(i = 0; i < states; i++)
+  for(i = 4; i < states - 1; i += stride)
     {
-    for(j = 0; j < states; j++)		
-    printf("%d ", (int)m[i][j]);
-    printf("\n");
+      for(j = 0; j < stride; j++)	
+	{
+	  double 
+	    a = (double)stride - j;
+	  //printf("A %f\n", a);
+	  m[i + j][i + j + 1] = (a * (pomoN - a)) / pomoN;
+	}
     }
-  */
+      
+ 
+  printf("stride: %d \n\n", stride);
+    
+  if(1)
+    for(i = 0; i < states; i++)
+      {      
+	for(j = 0; j < states; j++)		
+	  printf("%1.2f ", m[i][j]);
+	printf("\n");
+      }
+  printf("\n\n");
+  
+  exit(0);
 
   //copy into subst rates struct! 
 
