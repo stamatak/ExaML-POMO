@@ -2535,6 +2535,8 @@ int main (int argc, char *argv[])
     _mm_setcsr( _mm_getcsr() | _MM_FLUSH_ZERO_ON);
 #endif   
 
+    
+
   /* get the start time */
     
     masterTime = gettime();         
@@ -2688,6 +2690,11 @@ int main (int argc, char *argv[])
 	    
 	    /* continue tree search where we left it off */
 	    computeBIGRAPID(tr, adef, TRUE); 
+
+	    /* now print the model parameters to file */
+	    if(processID == 0)
+	      printModelParams(tr, adef, -1);
+
 	  }
 	else
 	  {
